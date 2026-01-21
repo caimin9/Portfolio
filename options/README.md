@@ -74,24 +74,10 @@ This installs all 68 required packages including:
 
 ## Usage
 
-### Launch Terminal Dashboard ⚡ RECOMMENDED!
+### Launch Dashboard
 ```bash
-# Single-page Bloomberg Terminal view - everything visible at once
-streamlit run dashboard_terminal.py
-```
-
-**Alternative dashboards:**
-```bash
-# Multi-panel modern UI
-streamlit run dashboard_modern.py
-
-# Original multi-page dashboard
 streamlit run dashboard.py
 ```
-
-**Guides:**
-- [TERMINAL_GUIDE.md](TERMINAL_GUIDE.md) - Single-page terminal (recommended)
-- [NEW_DASHBOARD_GUIDE.md](NEW_DASHBOARD_GUIDE.md) - Multi-panel modern UI
 
 ### Quick Analysis
 ```python
@@ -139,19 +125,20 @@ See [SETUP_NOTIFICATIONS.md](SETUP_NOTIFICATIONS.md) for detailed setup instruct
 
 ```
 options/
+├── api.py                        # FastAPI backend server
 ├── analytics.py                  # Core analysis engine (Breeden-Litzenberger)
-├── portfolio.py                  # Portfolio management with real-time pricing
+├── central_portfolio.py          # Central portfolio management
+├── portfolio.py                  # Portfolio class with real-time pricing
 ├── scanner.py                    # Market scanner with notification support
 ├── forecasting.py                # Price forecasting (Monte Carlo, distributions)
 ├── notifications.py              # Email & Discord alert system
-├── correlation_analysis.py       # Rolling correlations & beta analysis (NEW!)
+├── correlation_analysis.py       # Rolling correlations & beta analysis
 ├── visualization.py              # Plot generation
-├── dashboard.py                  # Streamlit dashboard (6 pages)
+├── dashboard.py                  # Streamlit dashboard
 ├── config.py                     # Configuration
 ├── example_usage.py              # Usage examples
-├── example_correlation_beta.py   # Correlation/beta examples (NEW!)
+├── example_correlation_beta.py   # Correlation/beta examples
 ├── SETUP_NOTIFICATIONS.md        # Notification setup guide
-├── IMPROVEMENTS_SUMMARY.md       # System overview
 ├── README.md                     # This file
 ├── data/
 │   ├── portfolio.json            # Saved portfolio
@@ -196,11 +183,11 @@ The system generates alerts for:
 4. Distribution skew changes
 5. Large expected move changes
 
-## Dashboard Pages
+## Dashboard Features
 
-1. **Single Ticker Analysis**: Deep-dive into one stock's options
-2. **Portfolio Monitor**: Track your positions and Greeks
-3. **Market Scanner**: Scan watchlist for opportunities
-4. **Forecasting**: Price predictions and scenarios
-5. **Correlations & Beta**: Rolling correlations, beta analysis, portfolio diversification (NEW!)
-6. **Settings**: Configure alerts and watchlist
+- **Single Ticker Analysis**: Deep-dive into one stock's options
+- **Portfolio Monitor**: Track your positions and Greeks
+- **Market Scanner**: Scan watchlist for opportunities
+- **Forecasting**: Price predictions and scenarios
+- **Correlations & Beta**: Rolling correlations, beta analysis, portfolio diversification
+- **Settings**: Configure alerts and watchlist

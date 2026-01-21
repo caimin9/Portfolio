@@ -72,32 +72,25 @@ A comprehensive portfolio management and options analytics platform with real-ti
 
 ## Quick Start
 
-### Option 1: One-Click Launch (Windows)
+Run the launcher script which starts both backend and frontend:
 
-Double-click `START-TERMINAL.bat` to launch both backend and frontend automatically.
-
-See [QUICK-START.md](QUICK-START.md) for details.
-
-### Option 2: Manual Launch
-
-**Terminal 1 - Backend API:**
+**Windows:**
 ```bash
-# Activate virtual environment
-.venv\Scripts\activate  # Windows
-source .venv/bin/activate  # macOS/Linux
-
-# Start FastAPI server
-cd options
-python api.py
+START-TERMINAL.bat
 ```
 
-**Terminal 2 - Frontend:**
+**macOS/Linux:**
 ```bash
-cd terminal-app
-npm run dev
+./START-TERMINAL.sh  # Coming soon
 ```
 
-Access the application:
+This single script:
+1. Cleans up any old processes
+2. Starts the FastAPI backend (port 8000)
+3. Starts the Next.js frontend (port 3000)
+4. Opens your browser to http://localhost:3000
+
+**Access points:**
 - **Frontend Terminal**: http://localhost:3000
 - **Backend API**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
@@ -118,17 +111,11 @@ curl -X POST http://localhost:8000/api/portfolio/add \
 curl http://localhost:8000/api/portfolio/summary
 ```
 
-### Streamlit Dashboards
+### Streamlit Dashboard
 
-Launch the terminal dashboard (recommended):
+Launch the analytics dashboard:
 ```bash
-streamlit run options/dashboard_terminal.py
-```
-
-Alternative dashboards:
-```bash
-streamlit run options/dashboard_modern.py  # Modern multi-panel UI
-streamlit run options/dashboard.py         # Original multi-page layout
+streamlit run options/dashboard.py
 ```
 
 ### Python API
@@ -159,7 +146,7 @@ Portfolio/
 │   ├── correlation_analysis.py  # Beta & correlation tools
 │   ├── scanner.py               # Market scanner
 │   ├── forecasting.py           # Price predictions
-│   ├── dashboard*.py            # Streamlit dashboards
+│   ├── dashboard.py             # Streamlit dashboard
 │   ├── notifications.py         # Email/Discord alerts
 │   └── data/                    # Portfolio & watchlist data
 ├── terminal-app/                # Next.js Frontend
@@ -168,19 +155,15 @@ Portfolio/
 │   └── package.json
 ├── requirements.txt             # Python dependencies (68 packages)
 ├── README.md                    # This file
-├── QUICK-START.md              # One-click launch guide
 ├── START-TERMINAL.bat          # Windows launcher
 └── .gitignore
 ```
 
 ## Documentation
 
-- [QUICK-START.md](QUICK-START.md) - One-click launch guide
-- [options/README.md](options/README.md) - Detailed analytics documentation
-- [options/TERMINAL_GUIDE.md](options/TERMINAL_GUIDE.md) - Terminal dashboard guide
+- [options/README.md](options/README.md) - Analytics and API documentation
 - [options/CORRELATION_BETA_GUIDE.md](options/CORRELATION_BETA_GUIDE.md) - Risk analysis guide
 - [options/SETUP_NOTIFICATIONS.md](options/SETUP_NOTIFICATIONS.md) - Email/Discord alerts
-- [terminal-app/README.md](terminal-app/README.md) - Frontend documentation
 
 ## API Endpoints
 

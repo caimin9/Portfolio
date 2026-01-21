@@ -1,8 +1,6 @@
 """
-Options Analytics Dashboard
-Streamlit-based dashboard for portfolio monitoring, options analysis, and scanning.
-
-Run with: streamlit run dashboard.py
+Professional Terminal Dashboard with Drill-Down Views
+Multi-page dashboard with portfolio overview, analytics, and individual stock drill-down
 """
 
 import streamlit as st
@@ -11,991 +9,1334 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
 import yfinance as yf
+from datetime import datetime, timedelta
+from typing import List, Dict
 
-# Import our modules
-from analytics import OptionsAnalyzer, ImpliedDistribution
-from portfolio import Portfolio
-from scanner import OptionsScanner, Watchlist, ScanResult
+from central_portfolio import get_central_portfolio, CentralPortfolio
+from analytics import OptionsAnalyzer
+from correlation_analysis import CorrelationAnalyzer
 from forecasting import DistributionForecaster
-from correlation_analysis import CorrelationAnalyzer, CorrelationVisualizer
-from config import DASHBOARD_REFRESH_SECONDS
-
+from scanner import OptionsScanner, Watchlist
 
 # Page config
 st.set_page_config(
-    page_title="Options Analytics Dashboard",
+    page_title="Portfolio Terminal",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS for dark theme
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #1e1e1e;
-        border-radius: 10px;
-        padding: 15px;
-        margin: 5px;
+    .stApp {
+        background-color: #0a0a0f;
     }
-    .alert-box {
-        background-color: #ff4b4b20;
-        border-left: 4px solid #ff4b4b;
-        padding: 10px;
+    .metric-card {
+        background-color: #1a1a28;
+        padding: 20px;
+        border-radius: 10px;
+        border: 1px solid #2a2a38;
+    }
+    .chart-container {
+        background-color: #1a1a28;
+        padding: 15px;
+        border-radius: 10px;
         margin: 10px 0;
     }
-    .bullish {
-        color: #00cc00;
+    h1, h2, h3 {
+        color: #ffffff;
     }
-    .bearish {
-        color: #ff4444;
+    .stButton>button {
+        background-color: #6366f1;
+        color: white;
+        border-radius: 5px;
+        border: none;
+        padding: 0.5rem 1rem;
+    }
+    .stButton>button:hover {
+        background-color: #4f46e5;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
-# Initialize session state
-if 'analyzer' not in st.session_state:
-    st.session_state.analyzer = OptionsAnalyzer()
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = Portfolio()
-if 'watchlist' not in st.session_state:
-    st.session_state.watchlist = Watchlist()
-if 'scanner' not in st.session_state:
-    st.session_state.scanner = OptionsScanner()
-if 'forecaster' not in st.session_state:
-    st.session_state.forecaster = DistributionForecaster()
+# ============================================================================
+# SESSION STATE INITIALIZATION
+# ============================================================================
 
+def initialize_session_state():
+    """Initialize all session state variables"""
+    # Navigation state
+    if 'view_mode' not in st.session_state:
+        st.session_state.view_mode = 'portfolio'
 
-def plot_implied_distribution(dist: ImpliedDistribution, current_price: float, 
-                               ticker: str) -> go.Figure:
-    """Create plotly figure for implied distribution"""
-    fig = go.Figure()
-    
-    # Distribution bars
-    fig.add_trace(go.Bar(
-        x=dist.strikes,
-        y=dist.density,
-        name='Implied Distribution',
-        marker_color='steelblue',
-        opacity=0.7
-    ))
-    
-    # Current price line
-    fig.add_vline(x=current_price, line_dash="dash", line_color="green",
-                  annotation_text=f"Current: ${current_price:.2f}")
-    
-    # Expected price line
-    fig.add_vline(x=dist.expected_price, line_dash="dash", line_color="red",
-                  annotation_text=f"Expected: ${dist.expected_price:.2f}")
-    
-    # 1 sigma range
-    lower_1s, upper_1s = dist.expected_move(0.68)
-    fig.add_vrect(x0=lower_1s, x1=upper_1s, fillcolor="orange", opacity=0.1,
-                  annotation_text="68% range")
-    
-    fig.update_layout(
-        title=f"{ticker} Implied Price Distribution",
-        xaxis_title="Strike Price ($)",
-        yaxis_title="Probability Density",
-        template="plotly_dark",
-        height=400
-    )
-    
-    return fig
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = 'overview'
 
+    if 'selected_ticker' not in st.session_state:
+        st.session_state.selected_ticker = None
 
-def plot_iv_smile(iv_surface: pd.DataFrame, current_price: float) -> go.Figure:
-    """Plot IV smile/skew"""
-    fig = go.Figure()
-    
-    calls = iv_surface[iv_surface['type'] == 'call']
-    puts = iv_surface[iv_surface['type'] == 'put']
-    
-    fig.add_trace(go.Scatter(
-        x=calls['moneyness'],
-        y=calls['impliedVolatility'] * 100,
-        mode='lines+markers',
-        name='Calls',
-        line=dict(color='green')
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=puts['moneyness'],
-        y=puts['impliedVolatility'] * 100,
-        mode='lines+markers',
-        name='Puts',
-        line=dict(color='red')
-    ))
-    
-    fig.add_vline(x=1.0, line_dash="dash", line_color="white",
-                  annotation_text="ATM")
-    
-    fig.update_layout(
-        title="Volatility Smile",
-        xaxis_title="Moneyness (Strike/Spot)",
-        yaxis_title="Implied Volatility (%)",
-        template="plotly_dark",
-        height=350
-    )
-    
-    return fig
+    if 'expanded_chart' not in st.session_state:
+        st.session_state.expanded_chart = None
 
+    if 'lookback_days' not in st.session_state:
+        st.session_state.lookback_days = 60
 
-def plot_price_history(ticker: str, period: str = '1y') -> go.Figure:
-    """Plot price history with volume"""
-    stock = yf.Ticker(ticker)
-    hist = stock.history(period=period)
-    
-    if hist.empty:
-        return go.Figure()
-    
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        vertical_spacing=0.03,
-                        row_heights=[0.7, 0.3])
-    
-    # Candlestick
-    fig.add_trace(go.Candlestick(
-        x=hist.index,
-        open=hist['Open'],
-        high=hist['High'],
-        low=hist['Low'],
-        close=hist['Close'],
-        name='Price'
-    ), row=1, col=1)
-    
-    # Moving averages
-    if len(hist) >= 20:
-        ma20 = hist['Close'].rolling(20).mean()
-        fig.add_trace(go.Scatter(x=hist.index, y=ma20, name='MA20',
-                                 line=dict(color='orange', width=1)), row=1, col=1)
-    
-    if len(hist) >= 50:
-        ma50 = hist['Close'].rolling(50).mean()
-        fig.add_trace(go.Scatter(x=hist.index, y=ma50, name='MA50',
-                                 line=dict(color='purple', width=1)), row=1, col=1)
-    
-    # Volume
-    colors = ['green' if hist['Close'].iloc[i] >= hist['Open'].iloc[i] else 'red'
-              for i in range(len(hist))]
-    fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], name='Volume',
-                         marker_color=colors, opacity=0.5), row=2, col=1)
-    
-    fig.update_layout(
-        title=f"{ticker} Price History",
-        template="plotly_dark",
-        height=500,
-        xaxis_rangeslider_visible=False
-    )
-    
-    return fig
+    # Portfolio instance
+    if 'portfolio' not in st.session_state:
+        st.session_state.portfolio = get_central_portfolio()
 
+    # Analytics instances
+    if 'options_analyzer' not in st.session_state:
+        st.session_state.options_analyzer = OptionsAnalyzer()
 
-def plot_monte_carlo(mc_results: dict) -> go.Figure:
-    """Plot Monte Carlo simulation paths"""
-    fig = go.Figure()
-    
-    paths = mc_results['paths']
-    n_paths_to_show = min(100, paths.shape[0])
-    
-    # Plot sample paths
-    for i in range(n_paths_to_show):
-        fig.add_trace(go.Scatter(
-            y=paths[i],
-            mode='lines',
-            line=dict(width=0.5, color='lightblue'),
-            opacity=0.3,
-            showlegend=False
-        ))
-    
-    # Add percentile lines
-    for pct in [5, 50, 95]:
-        pct_path = np.percentile(paths, pct, axis=0)
-        fig.add_trace(go.Scatter(
-            y=pct_path,
-            mode='lines',
-            name=f'{pct}th percentile',
-            line=dict(width=2)
-        ))
-    
-    # Current price
-    fig.add_hline(y=mc_results['current_price'], line_dash="dash",
-                  annotation_text="Current Price")
-    
-    fig.update_layout(
-        title=f"Monte Carlo Simulation ({mc_results['num_simulations']} paths)",
-        xaxis_title="Days",
-        yaxis_title="Price ($)",
-        template="plotly_dark",
-        height=400
-    )
-    
-    return fig
-
-
-# Sidebar navigation
-st.sidebar.title("📊 Options Analytics")
-page = st.sidebar.radio("Navigate", [
-    "🎯 Single Ticker Analysis",
-    "📈 Portfolio Monitor",
-    "🔍 Market Scanner",
-    "🔮 Forecasting",
-    "📊 Correlations & Beta",
-    "⚙️ Settings"
-])
-
-
-# ============ SINGLE TICKER ANALYSIS ============
-if page == "🎯 Single Ticker Analysis":
-    st.title("Options Chain Analysis")
-    
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        ticker = st.text_input("Ticker Symbol", value="SPY").upper()
-    
-    with col2:
-        # Get available expirations
-        try:
-            stock = yf.Ticker(ticker)
-            expirations = stock.options
-            exp_date = st.selectbox("Expiration", expirations) if expirations else None
-        except:
-            exp_date = None
-            st.warning("Could not fetch expirations")
-    
-    with col3:
-        analyze_btn = st.button("Analyze", type="primary")
-    
-    if analyze_btn and ticker and exp_date:
-        with st.spinner(f"Analyzing {ticker}..."):
-            try:
-                exp_index = list(expirations).index(exp_date)
-                results = st.session_state.analyzer.analyze_ticker(ticker, exp_index)
-                
-                # Top metrics
-                col1, col2, col3, col4, col5 = st.columns(5)
-                
-                col1.metric("Price", f"${results['current_price']:.2f}")
-                col2.metric("Days to Exp", results['days_to_exp'])
-                
-                if results['implied_distribution']:
-                    dist = results['implied_distribution']
-                    summary = results['summary']
-                    
-                    col3.metric("ATM IV", f"{dist.atm_iv*100:.1f}%")
-                    col4.metric("Expected Move", f"±{summary['expected_move_pct']:.1f}%")
-                    col5.metric("P/C Ratio", f"{summary['put_call_ratio']:.2f}")
-                    
-                    # Distribution plot
-                    st.subheader("Implied Price Distribution")
-                    fig_dist = plot_implied_distribution(dist, results['current_price'], ticker)
-                    st.plotly_chart(fig_dist, use_container_width=True)
-                    
-                    # Probability boxes
-                    st.subheader("Probability Analysis")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.info(f"**Prob Above Current:** {summary['prob_above_current']*100:.1f}%")
-                    with col2:
-                        st.info(f"**1σ Range:** ${summary['range_1sigma'][0]:.2f} - ${summary['range_1sigma'][1]:.2f}")
-                    with col3:
-                        st.info(f"**2σ Range:** ${summary['range_2sigma'][0]:.2f} - ${summary['range_2sigma'][1]:.2f}")
-                    
-                    # Distribution stats
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Skewness", f"{dist.skewness:.3f}",
-                                 help="Negative = bearish skew, Positive = bullish skew")
-                    with col2:
-                        st.metric("Excess Kurtosis", f"{dist.kurtosis:.3f}",
-                                 help="Higher = fat tails, more extreme move probability")
-                
-                # IV Smile
-                st.subheader("Volatility Smile")
-                fig_smile = plot_iv_smile(results['iv_surface'], results['current_price'])
-                st.plotly_chart(fig_smile, use_container_width=True)
-                
-                # Price history
-                st.subheader("Price History")
-                fig_price = plot_price_history(ticker)
-                st.plotly_chart(fig_price, use_container_width=True)
-                
-                # Options chain tables
-                st.subheader("Options Chain")
-                tab1, tab2 = st.tabs(["Calls", "Puts"])
-                
-                with tab1:
-                    calls_display = results['calls'][['strike', 'lastPrice', 'bid', 'ask', 
-                                                       'volume', 'openInterest', 'impliedVolatility',
-                                                       'delta', 'gamma', 'theta', 'vega']].copy()
-                    calls_display['impliedVolatility'] = (calls_display['impliedVolatility'] * 100).round(1)
-                    st.dataframe(calls_display, use_container_width=True)
-                
-                with tab2:
-                    puts_display = results['puts'][['strike', 'lastPrice', 'bid', 'ask',
-                                                     'volume', 'openInterest', 'impliedVolatility',
-                                                     'delta', 'gamma', 'theta', 'vega']].copy()
-                    puts_display['impliedVolatility'] = (puts_display['impliedVolatility'] * 100).round(1)
-                    st.dataframe(puts_display, use_container_width=True)
-                
-            except Exception as e:
-                st.error(f"Error analyzing {ticker}: {e}")
-
-
-# ============ PORTFOLIO MONITOR ============
-elif page == "📈 Portfolio Monitor":
-    st.title("Portfolio Monitor")
-    
-    portfolio = st.session_state.portfolio
-    
-    # Add position form
-    with st.expander("➕ Add Position"):
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            new_ticker = st.text_input("Ticker", key="new_ticker").upper()
-            pos_type = st.selectbox("Type", ["stock", "call", "put"])
-        
-        with col2:
-            quantity = st.number_input("Quantity", min_value=1, value=100)
-            entry_price = st.number_input("Entry Price", min_value=0.01, value=100.0)
-        
-        with col3:
-            if pos_type in ['call', 'put']:
-                strike = st.number_input("Strike", min_value=0.01, value=100.0)
-                exp = st.text_input("Expiration (YYYY-MM-DD)")
-            else:
-                strike = None
-                exp = None
-            
-            notes = st.text_input("Notes")
-        
-        if st.button("Add Position"):
-            if new_ticker:
-                if pos_type == 'stock':
-                    portfolio.add_stock(new_ticker, quantity, entry_price, notes)
-                else:
-                    portfolio.add_option(new_ticker, pos_type, quantity, entry_price,
-                                        strike, exp, notes)
-                st.success(f"Added {new_ticker} position!")
-                st.rerun()
-    
-    # Portfolio summary
-    if portfolio.positions:
-        summary = portfolio.summary()
-        
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Positions", summary['total_positions'])
-        col2.metric("Total Value", f"${summary['total_value']:,.2f}")
-        col3.metric("Total P&L", f"${summary['total_pnl']:,.2f}",
-                   delta=f"{summary['total_pnl_pct']:.1f}%")
-        col4.metric("Win Rate", f"{summary['winners']}/{summary['total_positions']}")
-        
-        # P&L table
-        st.subheader("Positions")
-        pnl_df = portfolio.calculate_pnl()
-        
-        # Style P&L
-        def color_pnl(val):
-            color = 'green' if val > 0 else 'red' if val < 0 else 'white'
-            return f'color: {color}'
-        
-        styled_df = pnl_df.style.applymap(color_pnl, subset=['pnl', 'pnl_pct'])
-        st.dataframe(pnl_df, use_container_width=True)
-        
-        # Portfolio Greeks
-        st.subheader("Portfolio Greeks")
-        try:
-            greeks = portfolio.get_portfolio_greeks(st.session_state.analyzer)
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Delta", f"{greeks['delta']:.2f}")
-            col2.metric("Gamma", f"{greeks['gamma']:.4f}")
-            col3.metric("Theta", f"${greeks['theta']:.2f}/day")
-            col4.metric("Vega", f"${greeks['vega']:.2f}/1% IV")
-        except Exception as e:
-            st.warning(f"Could not calculate Greeks: {e}")
-        
-        # Clear portfolio button
-        if st.button("Clear All Positions", type="secondary"):
-            portfolio.clear()
-            st.rerun()
-    else:
-        st.info("No positions in portfolio. Add some above!")
-
-
-# ============ MARKET SCANNER ============
-elif page == "🔍 Market Scanner":
-    st.title("Options Market Scanner")
-    
-    watchlist = st.session_state.watchlist
-    scanner = st.session_state.scanner
-    
-    # Watchlist management
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        st.write("**Current Watchlist:**", ", ".join(watchlist.tickers))
-    
-    with col2:
-        new_ticker = st.text_input("Add to watchlist", key="wl_add")
-        if st.button("Add") and new_ticker:
-            watchlist.add(new_ticker.upper())
-            st.rerun()
-    
-    # Scan button
-    if st.button("🔍 Scan Watchlist", type="primary"):
-        with st.spinner("Scanning market..."):
-            results = scanner.scan_watchlist(watchlist)
-            st.session_state.scan_results = results
-    
-    # Display results
-    if 'scan_results' in st.session_state and st.session_state.scan_results:
-        results = st.session_state.scan_results
-        
-        # Summary
-        with_alerts = [r for r in results if r.has_alerts]
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Tickers Scanned", len(results))
-        col2.metric("With Alerts", len(with_alerts))
-        col3.metric("Avg ATM IV", f"{np.mean([r.atm_iv for r in results])*100:.1f}%")
-        
-        # Alerts section
-        if with_alerts:
-            st.subheader("⚠️ Alerts")
-            for result in with_alerts:
-                with st.expander(f"**{result.ticker}** - {len(result.alerts)} alerts"):
-                    for alert in result.alerts:
-                        st.warning(alert)
-                    
-                    col1, col2, col3 = st.columns(3)
-                    col1.write(f"Price: ${result.current_price:.2f}")
-                    col2.write(f"ATM IV: {result.atm_iv*100:.1f}%")
-                    col3.write(f"P/C Ratio: {result.put_call_ratio:.2f}")
-        
-        # Results table
-        st.subheader("Scan Results")
-        
-        df = pd.DataFrame([{
-            'Ticker': r.ticker,
-            'Price': f"${r.current_price:.2f}",
-            'ATM IV': f"{r.atm_iv*100:.1f}%",
-            'Exp Move': f"±{r.expected_move_pct:.1f}%",
-            'P/C Ratio': f"{r.put_call_ratio:.2f}",
-            'Prob Up': f"{r.prob_up*100:.0f}%",
-            'Skew': f"{r.skewness:.2f}",
-            'Vol/OI': f"{r.volume_oi_ratio:.2f}x",
-            'Alerts': len(r.alerts)
-        } for r in results])
-        
-        st.dataframe(df, use_container_width=True)
-        
-        # Top movers
-        movers = scanner.get_top_movers(results)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("🔥 Highest IV")
-            for item in movers.get('highest_iv', []):
-                st.write(f"**{item['ticker']}**: {item['atm_iv']*100:.1f}%")
-        
-        with col2:
-            st.subheader("📈 Most Bullish")
-            for item in movers.get('most_bullish', []):
-                st.write(f"**{item['ticker']}**: {item['prob_up']*100:.0f}% up prob")
-
-
-# ============ FORECASTING ============
-elif page == "🔮 Forecasting":
-    st.title("Price Forecasting")
-    
-    forecaster = st.session_state.forecaster
-    
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        ticker = st.text_input("Ticker", value="SPY", key="fc_ticker").upper()
-    
-    with col2:
-        forecast_days = st.number_input("Forecast Days", min_value=1, max_value=90, value=30)
-    
-    with col3:
-        run_forecast = st.button("Generate Forecast", type="primary")
-    
-    if run_forecast and ticker:
-        with st.spinner("Generating forecast..."):
-            # Distribution-based forecast
-            forecast = forecaster.forecast_from_distribution(ticker)
-            
-            if forecast:
-                # Key metrics
-                col1, col2, col3, col4 = st.columns(4)
-                
-                exp_return = (forecast.expected_price / forecast.current_price - 1) * 100
-                
-                col1.metric("Current", f"${forecast.current_price:.2f}")
-                col2.metric("Expected", f"${forecast.expected_price:.2f}",
-                           delta=f"{exp_return:+.1f}%")
-                col3.metric("Prob Up", f"{forecast.prob_profit_long*100:.1f}%")
-                col4.metric("ATM IV", f"{forecast.atm_iv*100:.1f}%")
-                
-                # Probability ranges
-                st.subheader("Expected Ranges")
-                
-                range_data = {
-                    'Confidence': ['50%', '68% (1σ)', '95% (2σ)', '99%'],
-                    'Lower': [forecast.range_50[0], forecast.range_68[0],
-                             forecast.range_95[0], forecast.range_99[0]],
-                    'Upper': [forecast.range_50[1], forecast.range_68[1],
-                             forecast.range_95[1], forecast.range_99[1]]
-                }
-                range_df = pd.DataFrame(range_data)
-                range_df['Lower'] = range_df['Lower'].apply(lambda x: f"${x:.2f}")
-                range_df['Upper'] = range_df['Upper'].apply(lambda x: f"${x:.2f}")
-                
-                st.table(range_df)
-                
-                # Target probabilities
-                st.subheader("Target Probabilities")
-                
-                target_df = pd.DataFrame([
-                    {'Move': f"{pct:+d}%", 'Price': f"${forecast.current_price * (1 + pct/100):.2f}",
-                     'Probability': f"{prob*100:.1f}%"}
-                    for pct, prob in forecast.target_probs.items()
-                ])
-                st.table(target_df)
-            
-            # Monte Carlo simulation
-            st.subheader("Monte Carlo Simulation")
-            mc_results = forecaster.monte_carlo_forecast(ticker, forecast_days)
-            
-            if mc_results:
-                fig_mc = plot_monte_carlo(mc_results)
-                st.plotly_chart(fig_mc, use_container_width=True)
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("MC Expected", f"${mc_results['expected']:.2f}")
-                col2.metric("MC Prob Up", f"{mc_results['prob_up']*100:.1f}%")
-                col3.metric("Std Dev", f"${mc_results['std_dev']:.2f}")
-    
-    # Multi-ticker comparison
-    st.subheader("Compare Tickers")
-    
-    compare_tickers = st.text_input("Enter tickers (comma-separated)", 
-                                     value="SPY, QQQ, AAPL, MSFT, NVDA")
-    
-    if st.button("Compare"):
-        tickers = [t.strip().upper() for t in compare_tickers.split(",")]
-        
-        with st.spinner("Comparing..."):
-            comparison = forecaster.compare_forecasts(tickers)
-            
-            if not comparison.empty:
-                st.dataframe(comparison, use_container_width=True)
-
-
-# ============ CORRELATIONS & BETA ============
-elif page == "📊 Correlations & Beta":
-    st.title("Correlation & Beta Analysis")
-
-    # Initialize session state for correlation analyzer
     if 'corr_analyzer' not in st.session_state:
         st.session_state.corr_analyzer = CorrelationAnalyzer(window=60)
 
-    analyzer = st.session_state.corr_analyzer
+    if 'forecaster' not in st.session_state:
+        st.session_state.forecaster = DistributionForecaster()
 
-    # Analysis type tabs
-    tab1, tab2, tab3 = st.tabs(["Rolling Correlation", "Rolling Beta", "Portfolio Correlations"])
+    # Watchlist
+    if 'watchlist' not in st.session_state:
+        st.session_state.watchlist = Watchlist()
 
-    # ========== TAB 1: ROLLING CORRELATION ==========
+    if 'scanner' not in st.session_state:
+        st.session_state.scanner = OptionsScanner()
+
+
+# ============================================================================
+# PORTFOLIO OVERVIEW PAGE
+# ============================================================================
+
+def show_portfolio_overview():
+    """Display portfolio overview with pie chart and clickable positions table"""
+    st.title("📊 Portfolio Overview")
+
+    portfolio = st.session_state.portfolio
+    positions_df = portfolio.get_positions_df()
+
+    if positions_df.empty:
+        st.info("📭 No positions. Go to 'Manage Positions' to add some!")
+        return
+
+    # Top metrics
+    summary = portfolio.get_portfolio_summary()
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    col1.metric("Total Value", f"${summary['total_value']:,.0f}")
+    col2.metric("Total P&L", f"${summary['total_pnl']:,.0f}",
+                delta=f"{summary['total_pnl_pct']:.1f}%")
+    col3.metric("Positions", summary['total_positions'])
+
+    # Calculate winners
+    winners = len(positions_df[positions_df['pnl'] > 0])
+    col4.metric("Winners", f"{winners}/{summary['total_positions']}")
+
+    # Calculate beta
+    try:
+        analytics = portfolio.analyze_portfolio()
+        col5.metric("Portfolio β", f"{analytics.portfolio_beta:.2f}")
+    except:
+        col5.metric("Portfolio β", "Calculating...")
+
+    st.markdown("---")
+
+    # Main content: Pie chart + Table
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.markdown("### 🎯 Allocation")
+        fig = create_portfolio_pie_chart(positions_df)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Top holdings summary
+        st.markdown("### 📈 Top 3 Holdings")
+        top3 = positions_df.nlargest(3, 'market_value')
+        for _, row in top3.iterrows():
+            pct = (row['market_value'] / summary['total_value']) * 100
+            st.markdown(f"**{row['ticker']}** - {pct:.1f}%")
+
+    with col2:
+        st.markdown("### 💼 Positions")
+        show_clickable_positions_table(positions_df)
+
+
+def create_portfolio_pie_chart(positions_df: pd.DataFrame):
+    """Create donut chart showing allocation by dollar value"""
+    fig = go.Figure(data=[go.Pie(
+        labels=positions_df['ticker'],
+        values=positions_df['market_value'],
+        hole=0.45,
+        marker=dict(
+            colors=px.colors.qualitative.Bold,
+            line=dict(color='#0a0a0f', width=2)
+        ),
+        textposition='auto',
+        textinfo='label+percent',
+        hovertemplate='<b>%{label}</b><br>Value: $%{value:,.0f}<br>%{percent}<extra></extra>'
+    )])
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor='rgba(26, 26, 40, 0.8)',
+        height=400,
+        showlegend=False,
+        margin=dict(l=20, r=20, t=20, b=20)
+    )
+
+    return fig
+
+
+def show_clickable_positions_table(positions_df: pd.DataFrame):
+    """Display positions with click-to-drill-down functionality"""
+    # Table header
+    cols = st.columns([2, 1, 1, 1, 1, 1, 1])
+    cols[0].markdown("**Ticker**")
+    cols[1].markdown("**Type**")
+    cols[2].markdown("**Qty**")
+    cols[3].markdown("**Entry**")
+    cols[4].markdown("**Current**")
+    cols[5].markdown("**P&L**")
+    cols[6].markdown("**Action**")
+
+    st.markdown("---")
+
+    # Each position row
+    for idx, row in positions_df.iterrows():
+        cols = st.columns([2, 1, 1, 1, 1, 1, 1])
+
+        cols[0].markdown(f"**{row['ticker']}**")
+        cols[1].write(row['type'])
+        cols[2].write(str(row['quantity']))
+        cols[3].write(f"${row['entry_price']:.2f}")
+        cols[4].write(f"${row['current_price']:.2f}")
+
+        pnl_color = "🟢" if row['pnl'] >= 0 else "🔴"
+        cols[5].markdown(f"{pnl_color} ${row['pnl']:,.0f}")
+
+        if cols[6].button("🔍", key=f"view_{row['ticker']}_{idx}"):
+            st.session_state.selected_ticker = row['ticker']
+            st.rerun()
+
+
+# ============================================================================
+# MANAGE POSITIONS PAGE
+# ============================================================================
+
+def show_manage_positions():
+    """Dedicated page for adding/removing positions"""
+    st.title("⚙️ Manage Portfolio Positions")
+
+    portfolio = st.session_state.portfolio
+
+    tab1, tab2 = st.tabs(["➕ Add Position", "🗑️ Remove Positions"])
+
     with tab1:
-        st.subheader("Pairwise Rolling Correlation")
+        st.markdown("### Add New Position")
 
-        col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+        position_type = st.selectbox("Type", ["Stock", "Call Option", "Put Option"])
+
+        col1, col2, col3 = st.columns(3)
 
         with col1:
-            ticker1 = st.text_input("Ticker 1", value="AAPL", key="corr_t1").upper()
+            ticker = st.text_input("Ticker Symbol", value="", key="add_ticker").upper()
+            quantity = st.number_input("Quantity", min_value=1, value=100, step=1, key="add_qty")
+
         with col2:
-            ticker2 = st.text_input("Ticker 2", value="MSFT", key="corr_t2").upper()
+            entry_price = st.number_input("Entry Price ($)", min_value=0.01, value=100.0, step=0.01, key="add_price")
+
+            if position_type != "Stock":
+                strike = st.number_input("Strike Price ($)", min_value=0.01, value=100.0, step=0.01, key="add_strike")
+
         with col3:
-            window = st.number_input("Window (days)", min_value=10, max_value=252, value=60, key="corr_window")
-        with col4:
-            calc_corr = st.button("Calculate", type="primary", key="calc_corr_btn")
+            if position_type != "Stock":
+                expiration = st.date_input("Expiration Date", key="add_exp")
 
-        if calc_corr and ticker1 and ticker2:
-            with st.spinner(f"Calculating rolling correlation for {ticker1} vs {ticker2}..."):
-                try:
-                    analyzer.window = window
-                    rolling_corr = analyzer.rolling_correlation(ticker1, ticker2, period='2y')
+            notes = st.text_area("Notes (optional)", height=100, key="add_notes")
 
-                    # Store in session state
-                    st.session_state.rolling_corr_data = {
-                        'ticker1': ticker1,
-                        'ticker2': ticker2,
-                        'corr': rolling_corr
-                    }
-
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-        # Display results if available
-        if 'rolling_corr_data' in st.session_state:
-            data = st.session_state.rolling_corr_data
-            rolling_corr = data['corr']
-
-            # Metrics
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("Current", f"{rolling_corr.iloc[-1]:.3f}")
-            col2.metric("Mean", f"{rolling_corr.mean():.3f}")
-            col3.metric("Std Dev", f"{rolling_corr.std():.3f}")
-            col4.metric("Min", f"{rolling_corr.min():.3f}")
-            col5.metric("Max", f"{rolling_corr.max():.3f}")
-
-            # Plot using plotly
-            fig = go.Figure()
-
-            fig.add_trace(go.Scatter(
-                x=rolling_corr.index,
-                y=rolling_corr.values,
-                mode='lines',
-                name='Rolling Correlation',
-                line=dict(color='steelblue', width=2)
-            ))
-
-            # Add mean line
-            fig.add_hline(y=rolling_corr.mean(), line_dash="dash",
-                         line_color="green", annotation_text=f"Mean: {rolling_corr.mean():.3f}")
-
-            # Add std bands
-            fig.add_hline(y=rolling_corr.mean() + rolling_corr.std(),
-                         line_dash="dot", line_color="orange", opacity=0.5)
-            fig.add_hline(y=rolling_corr.mean() - rolling_corr.std(),
-                         line_dash="dot", line_color="orange", opacity=0.5)
-
-            # Zero line
-            fig.add_hline(y=0, line_dash="solid", line_color="gray", opacity=0.3)
-
-            fig.update_layout(
-                title=f"Rolling {window}-Day Correlation: {data['ticker1']} vs {data['ticker2']}",
-                xaxis_title="Date",
-                yaxis_title="Correlation",
-                template="plotly_dark",
-                height=500,
-                yaxis_range=[-1, 1]
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Regime analysis
-            st.subheader("Correlation Regime")
-            current = rolling_corr.iloc[-1]
-
-            if current > 0.7:
-                st.success(f"🟢 **HIGH POSITIVE** correlation ({current:.3f}) - Assets moving together")
-            elif current > 0.3:
-                st.info(f"🔵 **MODERATE POSITIVE** correlation ({current:.3f})")
-            elif current > -0.3:
-                st.warning(f"🟡 **LOW/NEUTRAL** correlation ({current:.3f}) - Good diversification")
-            elif current > -0.7:
-                st.info(f"🔵 **MODERATE NEGATIVE** correlation ({current:.3f})")
+        # Add button
+        if st.button("➕ Add Position", type="primary", use_container_width=True):
+            if not ticker:
+                st.error("Please enter a ticker symbol")
             else:
-                st.error(f"🔴 **HIGH NEGATIVE** correlation ({current:.3f}) - Assets moving opposite")
-
-    # ========== TAB 2: ROLLING BETA ==========
-    with tab2:
-        st.subheader("Rolling Beta Analysis")
-
-        col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
-
-        with col1:
-            beta_ticker = st.text_input("Asset Ticker", value="TSLA", key="beta_ticker").upper()
-        with col2:
-            benchmark = st.text_input("Benchmark", value="SPY", key="benchmark").upper()
-        with col3:
-            beta_window = st.number_input("Window (days)", min_value=10, max_value=252, value=60, key="beta_window")
-        with col4:
-            calc_beta = st.button("Calculate", type="primary", key="calc_beta_btn")
-
-        if calc_beta and beta_ticker and benchmark:
-            with st.spinner(f"Calculating rolling beta for {beta_ticker} vs {benchmark}..."):
                 try:
-                    analyzer.window = beta_window
-                    beta_result = analyzer.rolling_beta(beta_ticker, benchmark, period='2y')
+                    if position_type == "Stock":
+                        portfolio.add_stock(ticker, quantity, entry_price, notes)
+                        st.success(f"✅ Added {quantity} shares of {ticker}")
+                    else:
+                        opt_type = 'call' if position_type == "Call Option" else 'put'
+                        exp_str = expiration.strftime('%Y-%m-%d')
+                        portfolio.add_option(ticker, opt_type, quantity, entry_price,
+                                            strike, exp_str, notes)
+                        st.success(f"✅ Added {quantity} {ticker} {opt_type}s")
 
-                    st.session_state.beta_data = beta_result
+                    # Reload and redirect
+                    st.rerun()
 
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error adding position: {e}")
 
-        # Display results if available
-        if 'beta_data' in st.session_state:
-            beta_result = st.session_state.beta_data
+    with tab2:
+        st.markdown("### Current Positions")
 
-            # Key metrics
-            col1, col2, col3, col4, col5 = st.columns(5)
+        positions_df = portfolio.get_positions_df()
 
-            regime = beta_result.get_regime()
-            regime_colors = {'HIGH': '🔴', 'LOW': '🔵', 'NORMAL': '🟢'}
+        if not positions_df.empty:
+            # Show positions with remove buttons
+            for idx, row in positions_df.iterrows():
+                with st.expander(f"{row['ticker']} - {row['type']} - ${row['market_value']:,.0f}"):
+                    col1, col2, col3 = st.columns([2, 2, 1])
 
-            col1.metric("Current Beta", f"{beta_result.current_beta:.3f}",
-                       help=f"Regime: {regime}")
-            col2.metric("Average Beta", f"{beta_result.avg_beta:.3f}")
-            col3.metric("Beta Std Dev", f"{beta_result.beta_std:.3f}")
-            col4.metric("Current Alpha", f"{beta_result.alphas[-1] * 252 * 100:.2f}%",
-                       help="Annualized excess return")
-            col5.metric("R²", f"{beta_result.r_squared[-1]:.3f}",
-                       help="Explanatory power of benchmark")
+                    with col1:
+                        st.write(f"**Quantity:** {row['quantity']}")
+                        st.write(f"**Entry:** ${row['entry_price']:.2f}")
+                        st.write(f"**Current:** ${row['current_price']:.2f}")
 
-            st.info(f"{regime_colors[regime]} **Beta Regime: {regime}** - "
-                   f"{'Higher than normal systematic risk' if regime == 'HIGH' else 'Lower than normal systematic risk' if regime == 'LOW' else 'Normal systematic risk'}")
+                    with col2:
+                        st.write(f"**Value:** ${row['market_value']:,.0f}")
+                        pnl_emoji = "🟢" if row['pnl'] >= 0 else "🔴"
+                        st.write(f"**P&L:** {pnl_emoji} ${row['pnl']:,.0f} ({row['pnl_pct']:+.1f}%)")
 
-            # Create subplots for beta, alpha, and R²
-            from plotly.subplots import make_subplots
+                    with col3:
+                        if st.button("Remove", key=f"remove_{idx}", type="secondary"):
+                            portfolio.remove_position(idx)
+                            st.success(f"Removed {row['ticker']}")
+                            st.rerun()
 
-            fig = make_subplots(
-                rows=3, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.05,
-                subplot_titles=('Rolling Beta', 'Rolling Alpha (Annualized %)', 'R² (Explanatory Power)'),
-                row_heights=[0.4, 0.3, 0.3]
-            )
+            # Clear all button
+            st.markdown("---")
+            if st.button("🗑️ Clear All Positions", type="secondary"):
+                confirm = st.checkbox("⚠️ Confirm clear all")
+                if confirm:
+                    portfolio.clear()
+                    st.success("All positions cleared")
+                    st.rerun()
+        else:
+            st.info("No positions to remove")
 
-            # Beta plot
-            fig.add_trace(go.Scatter(
-                x=beta_result.dates,
-                y=beta_result.betas,
-                mode='lines',
-                name='Beta',
-                line=dict(color='steelblue', width=2)
-            ), row=1, col=1)
 
-            fig.add_hline(y=beta_result.avg_beta, line_dash="dash",
-                         line_color="green", row=1, col=1,
-                         annotation_text=f"Mean: {beta_result.avg_beta:.3f}")
+# ============================================================================
+# STOCK DETAIL DRILL-DOWN PAGE
+# ============================================================================
 
-            fig.add_hline(y=1.0, line_dash="solid",
-                         line_color="gray", opacity=0.3, row=1, col=1,
-                         annotation_text="Market Beta")
+def show_stock_detail(ticker: str):
+    """Show detailed analysis for individual stock with 2x3 grid"""
+    st.title(f"🔍 {ticker} - Detailed Analysis")
 
-            # Alpha plot
-            fig.add_trace(go.Scatter(
-                x=beta_result.dates,
-                y=beta_result.alphas * 252 * 100,  # Annualized %
-                mode='lines',
-                name='Alpha',
-                line=dict(color='purple', width=2)
-            ), row=2, col=1)
+    portfolio = st.session_state.portfolio
+    positions_df = portfolio.get_positions_df()
 
-            fig.add_hline(y=0, line_dash="solid",
-                         line_color="gray", opacity=0.3, row=2, col=1)
+    # Get position
+    position_data = positions_df[positions_df['ticker'] == ticker]
+    if position_data.empty:
+        st.error(f"Position {ticker} not found")
+        return
 
-            # R² plot
-            fig.add_trace(go.Scatter(
-                x=beta_result.dates,
-                y=beta_result.r_squared,
-                mode='lines',
-                name='R²',
-                line=dict(color='orange', width=2)
-            ), row=3, col=1)
+    position = position_data.iloc[0]
 
-            fig.add_hline(y=0.5, line_dash="dash",
-                         line_color="gray", opacity=0.3, row=3, col=1,
-                         annotation_text="50%")
+    # Back button
+    if st.button("← Back to Portfolio"):
+        st.session_state.selected_ticker = None
+        st.session_state.current_page = 'overview'
+        st.rerun()
 
-            fig.update_xaxes(title_text="Date", row=3, col=1)
-            fig.update_yaxes(title_text="Beta", row=1, col=1)
-            fig.update_yaxes(title_text="Alpha (%)", row=2, col=1)
-            fig.update_yaxes(title_text="R²", range=[0, 1], row=3, col=1)
+    # Header - Position Details
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
-            fig.update_layout(
-                height=800,
-                template="plotly_dark",
-                showlegend=False,
-                title_text=f"Rolling Beta Analysis: {beta_result.ticker} vs {beta_result.benchmark}"
-            )
+    total_value = positions_df['market_value'].sum()
+    portfolio_weight = (position['market_value'] / total_value) * 100 if total_value > 0 else 0
 
-            st.plotly_chart(fig, use_container_width=True)
+    col1.metric("Shares", position['quantity'])
+    col2.metric("Entry", f"${position['entry_price']:.2f}")
+    col3.metric("Current", f"${position['current_price']:.2f}")
+    col4.metric("Value", f"${position['market_value']:,.0f}")
+    col5.metric("P&L", f"${position['pnl']:,.0f}", delta=f"{position['pnl_pct']:+.1f}%")
+    col6.metric("Weight", f"{portfolio_weight:.1f}%")
 
-            # Interpretation
-            st.subheader("Interpretation")
+    st.markdown("---")
 
-            col1, col2 = st.columns(2)
+    # Check if expanded chart mode
+    if st.session_state.expanded_chart:
+        show_expanded_chart(ticker, st.session_state.expanded_chart, position)
+        if st.button("✕ Close", type="secondary"):
+            st.session_state.expanded_chart = None
+            st.rerun()
+        return
 
-            with col1:
-                st.write("**Beta Interpretation:**")
-                if beta_result.current_beta > 1.5:
-                    st.write("- 🔴 Very high volatility relative to market")
-                    st.write("- Amplified gains AND losses")
-                elif beta_result.current_beta > 1.0:
-                    st.write("- 🟠 Higher volatility than market")
-                    st.write("- Moves more than benchmark")
-                elif beta_result.current_beta > 0.5:
-                    st.write("- 🟢 Lower volatility than market")
-                    st.write("- More defensive")
-                else:
-                    st.write("- 🔵 Much lower volatility than market")
-                    st.write("- Very defensive")
+    # 2×3 Grid
+    st.markdown("### 📊 Analytics (Click any chart to expand)")
 
-            with col2:
-                st.write("**Alpha Interpretation:**")
-                current_alpha = beta_result.alphas[-1] * 252 * 100
-                if current_alpha > 5:
-                    st.write(f"- 🟢 Strong positive alpha ({current_alpha:.1f}%)")
-                    st.write("- Outperforming benchmark")
-                elif current_alpha > 0:
-                    st.write(f"- 🟢 Positive alpha ({current_alpha:.1f}%)")
-                elif current_alpha > -5:
-                    st.write(f"- 🔴 Negative alpha ({current_alpha:.1f}%)")
-                else:
-                    st.write(f"- 🔴 Strong negative alpha ({current_alpha:.1f}%)")
-                    st.write("- Underperforming benchmark")
+    # ROW 1
+    col1, col2 = st.columns(2)
 
-    # ========== TAB 3: PORTFOLIO CORRELATIONS ==========
+    with col1:
+        st.markdown("#### 📈 Price History")
+        fig = create_price_chart_with_entry(ticker, position['entry_price'])
+        st.plotly_chart(fig, use_container_width=True)
+        if st.button("🔍 Expand", key="expand_price"):
+            st.session_state.expanded_chart = 'price'
+            st.rerun()
+
+    with col2:
+        st.markdown("#### 📊 Rolling Beta")
+        fig = create_stock_beta_chart(ticker)
+        st.plotly_chart(fig, use_container_width=True)
+        if st.button("🔍 Expand", key="expand_beta"):
+            st.session_state.expanded_chart = 'beta'
+            st.rerun()
+
+    # ROW 2
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### 🔗 Portfolio Correlation")
+        fig = create_correlation_bars(ticker, portfolio)
+        st.plotly_chart(fig, use_container_width=True)
+        if st.button("🔍 Expand", key="expand_corr"):
+            st.session_state.expanded_chart = 'correlation'
+            st.rerun()
+
+    with col2:
+        st.markdown("#### 📉 Implied Distribution")
+        fig = create_distribution_chart(ticker)
+        st.plotly_chart(fig, use_container_width=True)
+        if st.button("🔍 Expand", key="expand_dist"):
+            st.session_state.expanded_chart = 'distribution'
+            st.rerun()
+
+    # ROW 3
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### ⭐ Analyst Ratings")
+        show_analyst_ratings_panel(ticker)
+
+    with col2:
+        st.markdown("#### 📊 IV Percentile")
+        fig = create_iv_percentile_chart(ticker)
+        st.plotly_chart(fig, use_container_width=True)
+        if st.button("🔍 Expand", key="expand_iv"):
+            st.session_state.expanded_chart = 'iv_percentile'
+            st.rerun()
+
+    # Bottom tabs
+    st.markdown("---")
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Fundamentals", "🏢 Sector Comparison", "📈 Volume Analysis", "📰 News (Future)"])
+
+    with tab1:
+        show_fundamentals(ticker)
+
+    with tab2:
+        show_sector_comparison(ticker)
+
     with tab3:
-        st.subheader("Portfolio Correlation Matrix")
+        show_volume_analysis(ticker)
 
-        # Ticker input
-        tickers_input = st.text_area(
-            "Enter tickers (one per line or comma-separated)",
-            value="SPY\nQQQ\nAAPL\nMSFT\nNVDA",
-            height=100,
-            key="portfolio_tickers"
+    with tab4:
+        st.info("📰 News integration coming soon")
+        st.markdown("**Placeholder for:** Latest news, earnings, SEC filings")
+
+
+def show_expanded_chart(ticker: str, chart_type: str, position):
+    """Show full-screen version of selected chart"""
+    st.markdown(f"### {ticker} - {chart_type.replace('_', ' ').title()}")
+
+    if chart_type == 'price':
+        fig = create_price_chart_detailed(ticker, position['entry_price'])
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif chart_type == 'beta':
+        fig = create_beta_chart_detailed(ticker)
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif chart_type == 'correlation':
+        fig = create_correlation_detailed(ticker)
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif chart_type == 'distribution':
+        fig = create_distribution_detailed(ticker)
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif chart_type == 'iv_percentile':
+        fig = create_iv_detailed(ticker)
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ============================================================================
+# CHART HELPER FUNCTIONS
+# ============================================================================
+
+def create_price_chart_with_entry(ticker: str, entry_price: float):
+    """Candlestick chart with entry price marked"""
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period='1y')
+
+        if hist.empty:
+            return create_empty_chart("No price data available")
+
+        fig = make_subplots(
+            rows=2, cols=1,
+            row_heights=[0.7, 0.3],
+            shared_xaxes=True,
+            vertical_spacing=0.03
         )
 
-        col1, col2, col3 = st.columns([1, 1, 2])
+        # Candlestick
+        fig.add_trace(go.Candlestick(
+            x=hist.index,
+            open=hist['Open'],
+            high=hist['High'],
+            low=hist['Low'],
+            close=hist['Close'],
+            name='Price'
+        ), row=1, col=1)
 
-        with col1:
-            portfolio_window = st.number_input("Window (days)", min_value=10, max_value=252, value=60, key="portfolio_window")
-        with col2:
-            calc_portfolio = st.button("Calculate Matrix", type="primary", key="calc_portfolio_btn")
+        # Entry price line
+        fig.add_hline(
+            y=entry_price,
+            line_dash="dash",
+            line_color="#f59e0b",
+            annotation_text=f"Entry: ${entry_price:.2f}",
+            annotation_position="right",
+            row=1, col=1
+        )
 
-        if calc_portfolio and tickers_input:
-            # Parse tickers
-            tickers = [t.strip().upper() for t in tickers_input.replace(',', '\n').split('\n') if t.strip()]
+        # Moving averages
+        hist['MA20'] = hist['Close'].rolling(20).mean()
+        hist['MA50'] = hist['Close'].rolling(50).mean()
 
-            if len(tickers) < 2:
-                st.error("Please enter at least 2 tickers")
-            else:
-                with st.spinner(f"Calculating correlation matrix for {len(tickers)} tickers..."):
-                    try:
-                        analyzer.window = portfolio_window
-                        corr_matrix = analyzer.rolling_correlation_matrix(tickers, period='2y')
+        fig.add_trace(go.Scatter(
+            x=hist.index, y=hist['MA20'],
+            name='MA20', line=dict(color='orange', width=1)
+        ), row=1, col=1)
 
-                        st.session_state.corr_matrix_data = corr_matrix
+        fig.add_trace(go.Scatter(
+            x=hist.index, y=hist['MA50'],
+            name='MA50', line=dict(color='purple', width=1)
+        ), row=1, col=1)
 
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+        # Volume
+        colors = ['#10b981' if hist['Close'].iloc[i] >= hist['Open'].iloc[i]
+                  else '#ef4444' for i in range(len(hist))]
 
-        # Display results if available
-        if 'corr_matrix_data' in st.session_state:
-            corr_matrix = st.session_state.corr_matrix_data
+        fig.add_trace(go.Bar(
+            x=hist.index, y=hist['Volume'],
+            name='Volume', marker_color=colors, opacity=0.5
+        ), row=2, col=1)
 
-            st.metric("Average Correlation", f"{corr_matrix.avg_correlation:.3f}",
-                     help="Mean pairwise correlation across all assets")
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor='rgba(26, 26, 40, 0.8)',
+            height=350,
+            xaxis_rangeslider_visible=False,
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
 
-            # Correlation heatmap
-            st.subheader("Current Correlation Matrix")
+        fig.update_xaxes(title_text="Date", row=2, col=1)
+        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+        fig.update_yaxes(title_text="Volume", row=2, col=1)
 
-            fig = go.Figure(data=go.Heatmap(
-                z=corr_matrix.correlation_matrix.values,
-                x=corr_matrix.tickers,
-                y=corr_matrix.tickers,
-                colorscale='RdYlGn',
-                zmid=0,
-                zmin=-1,
-                zmax=1,
-                text=corr_matrix.correlation_matrix.values,
-                texttemplate='%{text:.2f}',
-                textfont={"size": 10},
-                colorbar=dict(title="Correlation")
+        return fig
+
+    except Exception as e:
+        return create_empty_chart(f"Error loading price data: {e}")
+
+
+def create_price_chart_detailed(ticker: str, entry_price: float):
+    """Detailed full-screen price chart"""
+    return create_price_chart_with_entry(ticker, entry_price)
+
+
+def create_stock_beta_chart(ticker: str):
+    """Create rolling beta chart for single stock"""
+    try:
+        corr_analyzer = st.session_state.corr_analyzer
+        beta_result = corr_analyzer.rolling_beta(ticker, 'SPY', period='1y', window=60)
+
+        fig = go.Figure()
+
+        # Beta line
+        fig.add_trace(go.Scatter(
+            x=beta_result.rolling_beta.index,
+            y=beta_result.rolling_beta,
+            name='Rolling Beta',
+            line=dict(color='#6366f1', width=2)
+        ))
+
+        # Current beta line
+        fig.add_hline(
+            y=beta_result.current_beta,
+            line_dash="dash",
+            line_color="#10b981",
+            annotation_text=f"Current β: {beta_result.current_beta:.2f}"
+        )
+
+        # Beta = 1 reference
+        fig.add_hline(y=1.0, line_dash="dot", line_color="gray", opacity=0.5)
+
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor='rgba(26, 26, 40, 0.8)',
+            height=350,
+            yaxis_title="Beta vs SPY",
+            xaxis_title="Date",
+            showlegend=True
+        )
+
+        return fig
+
+    except Exception as e:
+        return create_empty_chart(f"Beta calculation unavailable: {e}")
+
+
+def create_beta_chart_detailed(ticker: str):
+    """Detailed beta chart with more metrics"""
+    try:
+        corr_analyzer = st.session_state.corr_analyzer
+        beta_result = corr_analyzer.rolling_beta(ticker, 'SPY', period='1y', window=60)
+
+        fig = make_subplots(
+            rows=2, cols=1,
+            row_heights=[0.7, 0.3],
+            subplot_titles=['Rolling Beta', 'R² (Correlation Quality)']
+        )
+
+        # Beta
+        fig.add_trace(go.Scatter(
+            x=beta_result.rolling_beta.index,
+            y=beta_result.rolling_beta,
+            name='Beta',
+            line=dict(color='#6366f1', width=2)
+        ), row=1, col=1)
+
+        fig.add_hline(y=1.0, line_dash="dot", line_color="gray", row=1, col=1)
+
+        # R²
+        fig.add_trace(go.Scatter(
+            x=beta_result.rolling_beta.index,
+            y=beta_result.r_squared,
+            name='R²',
+            line=dict(color='#f59e0b', width=2),
+            fill='tozeroy'
+        ), row=2, col=1)
+
+        fig.update_layout(
+            template="plotly_dark",
+            height=600,
+            showlegend=True
+        )
+
+        return fig
+
+    except Exception as e:
+        return create_empty_chart(f"Error: {e}")
+
+
+def create_correlation_bars(ticker: str, portfolio: CentralPortfolio):
+    """Create bar chart of correlations with other portfolio positions"""
+    try:
+        corr_analyzer = st.session_state.corr_analyzer
+        tickers = portfolio.get_unique_tickers()
+        other_tickers = [t for t in tickers if t != ticker]
+
+        if not other_tickers:
+            return create_empty_chart("No other positions to correlate")
+
+        correlations = []
+        for other in other_tickers:
+            try:
+                rolling_corr = corr_analyzer.rolling_correlation(ticker, other, period='1y')
+                if not rolling_corr.empty:
+                    current_corr = rolling_corr.iloc[-1]
+                    correlations.append({'ticker': other, 'correlation': current_corr})
+            except:
+                pass
+
+        if not correlations:
+            return create_empty_chart("Unable to calculate correlations")
+
+        corr_df = pd.DataFrame(correlations)
+
+        # Bar chart
+        fig = go.Figure(data=[go.Bar(
+            x=corr_df['ticker'],
+            y=corr_df['correlation'],
+            marker_color=['#10b981' if c >= 0 else '#ef4444' for c in corr_df['correlation']]
+        )])
+
+        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor='rgba(26, 26, 40, 0.8)',
+            height=350,
+            yaxis_range=[-1, 1],
+            yaxis_title="Correlation",
+            xaxis_title="Ticker"
+        )
+
+        return fig
+
+    except Exception as e:
+        return create_empty_chart(f"Error: {e}")
+
+
+def create_correlation_detailed(ticker: str):
+    """Detailed correlation analysis"""
+    return create_correlation_bars(ticker, st.session_state.portfolio)
+
+
+def create_distribution_chart(ticker: str):
+    """Create implied distribution chart from options"""
+    try:
+        analyzer = st.session_state.options_analyzer
+        results = analyzer.analyze_ticker(ticker, 0)
+
+        if results['implied_distribution'] is None:
+            return create_empty_chart("No options data available")
+
+        dist = results['implied_distribution']
+
+        fig = go.Figure()
+
+        # Distribution curve
+        fig.add_trace(go.Scatter(
+            x=dist.strikes,
+            y=dist.probabilities,
+            name='Implied Distribution',
+            line=dict(color='#6366f1', width=2),
+            fill='tozeroy'
+        ))
+
+        # Current price
+        fig.add_vline(
+            x=dist.current_price,
+            line_dash="dash",
+            line_color="#10b981",
+            annotation_text="Current"
+        )
+
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor='rgba(26, 26, 40, 0.8)',
+            height=350,
+            xaxis_title="Price ($)",
+            yaxis_title="Probability Density",
+            showlegend=True
+        )
+
+        return fig
+
+    except Exception as e:
+        return create_empty_chart(f"Distribution unavailable: {e}")
+
+
+def create_distribution_detailed(ticker: str):
+    """Detailed distribution with more metrics"""
+    return create_distribution_chart(ticker)
+
+
+def create_iv_percentile_chart(ticker: str):
+    """Show current IV vs historical percentiles"""
+    try:
+        analyzer = st.session_state.options_analyzer
+        results = analyzer.analyze_ticker(ticker, 0)
+
+        if results['implied_distribution']:
+            current_iv = results['implied_distribution'].atm_iv
+
+            fig = go.Figure()
+
+            # Gauge chart
+            fig.add_trace(go.Indicator(
+                mode="gauge+number+delta",
+                value=current_iv * 100,
+                title={'text': "ATM IV (%)"},
+                delta={'reference': 20, 'suffix': ""},
+                gauge={
+                    'axis': {'range': [0, 100]},
+                    'bar': {'color': "#6366f1"},
+                    'steps': [
+                        {'range': [0, 20], 'color': "#10b981"},
+                        {'range': [20, 40], 'color': "#3b82f6"},
+                        {'range': [40, 60], 'color': "#f59e0b"},
+                        {'range': [60, 100], 'color': "#ef4444"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "white", 'width': 2},
+                        'thickness': 0.75,
+                        'value': current_iv * 100
+                    }
+                }
             ))
 
             fig.update_layout(
-                title="Correlation Heatmap",
                 template="plotly_dark",
-                height=600,
-                xaxis={'side': 'bottom'},
-                yaxis={'autorange': 'reversed'}
+                paper_bgcolor='rgba(26, 26, 40, 0.8)',
+                height=350,
+                margin=dict(l=20, r=20, t=50, b=20)
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            return fig
 
-            # High correlation pairs
-            high_corr_pairs = corr_matrix.get_pairs_by_correlation(0.7)
+    except:
+        pass
 
-            if high_corr_pairs:
-                st.subheader("⚠️ High Correlation Pairs (|r| > 0.7)")
-                st.write("These pairs move very similarly - consider reducing overlap for better diversification:")
-
-                for t1, t2, corr in high_corr_pairs:
-                    sentiment = "🟢" if corr > 0 else "🔴"
-                    st.write(f"{sentiment} **{t1}** ↔ **{t2}**: {corr:.3f}")
-            else:
-                st.success("✓ No high correlation pairs found - good diversification!")
-
-            # Diversification score
-            st.subheader("Diversification Score")
-
-            if corr_matrix.avg_correlation < 0.3:
-                st.success(f"🟢 **Excellent diversification** (avg correlation: {corr_matrix.avg_correlation:.3f})")
-            elif corr_matrix.avg_correlation < 0.5:
-                st.info(f"🟡 **Good diversification** (avg correlation: {corr_matrix.avg_correlation:.3f})")
-            elif corr_matrix.avg_correlation < 0.7:
-                st.warning(f"🟠 **Moderate diversification** (avg correlation: {corr_matrix.avg_correlation:.3f})")
-            else:
-                st.error(f"🔴 **Poor diversification** (avg correlation: {corr_matrix.avg_correlation:.3f})")
+    return create_empty_chart("No options data available")
 
 
-# ============ SETTINGS ============
-elif page == "⚙️ Settings":
-    st.title("Settings")
-    
-    st.subheader("Alert Thresholds")
-    
+def create_iv_detailed(ticker: str):
+    """Detailed IV analysis"""
+    return create_iv_percentile_chart(ticker)
+
+
+def show_analyst_ratings_panel(ticker: str):
+    """Display analyst ratings and recommendations"""
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        # Key metrics
+        col1, col2, col3 = st.columns(3)
+
+        recommendation = info.get('recommendationKey', 'N/A')
+        target = info.get('targetMeanPrice', None)
+        num_analysts = info.get('numberOfAnalystOpinions', 0)
+
+        # Color code recommendation
+        rec_colors = {
+            'strong_buy': '🟢',
+            'buy': '🟢',
+            'hold': '🟡',
+            'sell': '🔴',
+            'strong_sell': '🔴'
+        }
+        rec_emoji = rec_colors.get(recommendation, '⚪')
+
+        col1.metric("Consensus", f"{rec_emoji} {recommendation.replace('_', ' ').title()}")
+        col2.metric("Price Target", f"${target:.2f}" if target else "N/A")
+        col3.metric("Analysts", num_analysts)
+
+        # Upside/downside to target
+        if target:
+            current = info.get('currentPrice', info.get('regularMarketPrice', 0))
+            if current:
+                upside = ((target / current) - 1) * 100
+                if upside > 10:
+                    st.success(f"📈 {upside:+.1f}% upside to target")
+                elif upside < -10:
+                    st.warning(f"📉 {upside:+.1f}% downside to target")
+                else:
+                    st.info(f"Target: {upside:+.1f}%")
+
+    except Exception as e:
+        st.warning("Analyst data not available")
+
+
+def show_fundamentals(ticker: str):
+    """Show key fundamental metrics"""
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        market_cap = info.get('marketCap', 0)
+        col1.metric("Market Cap", f"${market_cap/1e9:.1f}B" if market_cap else "N/A")
+
+        pe = info.get('trailingPE', 0)
+        col2.metric("P/E Ratio", f"{pe:.2f}" if pe else "N/A")
+
+        div_yield = info.get('dividendYield', 0)
+        col3.metric("Dividend Yield", f"{div_yield*100:.2f}%" if div_yield else "N/A")
+
+        beta = info.get('beta', 0)
+        col4.metric("Beta (Stated)", f"{beta:.2f}" if beta else "N/A")
+
+        st.markdown("---")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.write(f"**Sector:** {info.get('sector', 'N/A')}")
+            st.write(f"**Industry:** {info.get('industry', 'N/A')}")
+
+        with col2:
+            high_52w = info.get('fiftyTwoWeekHigh', 0)
+            low_52w = info.get('fiftyTwoWeekLow', 0)
+            st.write(f"**52W High:** ${high_52w:.2f}" if high_52w else "**52W High:** N/A")
+            st.write(f"**52W Low:** ${low_52w:.2f}" if low_52w else "**52W Low:** N/A")
+
+    except Exception as e:
+        st.error(f"Error loading fundamentals: {e}")
+
+
+def show_volume_analysis(ticker: str):
+    """Analyze recent volume patterns"""
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period='3mo')
+
+        if hist.empty:
+            st.warning("No volume data available")
+            return
+
+        # Calculate average volume
+        avg_volume = hist['Volume'].rolling(20).mean()
+        recent_volume = hist['Volume'].iloc[-1]
+        volume_ratio = recent_volume / avg_volume.iloc[-1] if len(avg_volume) > 0 and avg_volume.iloc[-1] > 0 else 1
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("Recent Volume", f"{recent_volume/1e6:.1f}M")
+        col2.metric("20D Avg", f"{avg_volume.iloc[-1]/1e6:.1f}M")
+        col3.metric("Ratio", f"{volume_ratio:.2f}x")
+
+        if volume_ratio > 2:
+            st.warning("🔥 Unusual volume detected (>2x average)")
+        elif volume_ratio > 1.5:
+            st.info("Elevated volume")
+        else:
+            st.success("Normal volume")
+
+        # Volume chart
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            x=hist.index,
+            y=hist['Volume'],
+            name='Volume',
+            marker_color='#6366f1'
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=hist.index,
+            y=avg_volume,
+            name='20D Average',
+            line=dict(color='#f59e0b', width=2)
+        ))
+
+        fig.update_layout(
+            template="plotly_dark",
+            height=300,
+            yaxis_title="Volume",
+            showlegend=True
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error loading volume data: {e}")
+
+
+def show_sector_comparison(ticker: str):
+    """Compare performance vs sector ETF"""
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        sector = info.get('sector', None)
+
+        # Map sectors to ETFs
+        sector_etfs = {
+            'Technology': 'XLK',
+            'Financials': 'XLF',
+            'Healthcare': 'XLV',
+            'Energy': 'XLE',
+            'Consumer Cyclical': 'XLY',
+            'Consumer Defensive': 'XLP',
+            'Industrials': 'XLI',
+            'Real Estate': 'XLRE',
+            'Utilities': 'XLU',
+            'Communication Services': 'XLC',
+            'Basic Materials': 'XLB'
+        }
+
+        sector_etf = sector_etfs.get(sector, 'SPY')
+
+        st.write(f"**Sector:** {sector} (ETF: {sector_etf})")
+
+        # Fetch performance data
+        stock_hist = stock.history(period='1y')
+        sector_hist = yf.Ticker(sector_etf).history(period='1y')
+
+        if stock_hist.empty or sector_hist.empty:
+            st.warning("Unable to fetch comparison data")
+            return
+
+        # Calculate returns
+        stock_return = ((stock_hist['Close'].iloc[-1] / stock_hist['Close'].iloc[0]) - 1) * 100
+        sector_return = ((sector_hist['Close'].iloc[-1] / sector_hist['Close'].iloc[0]) - 1) * 100
+
+        relative_strength = stock_return - sector_return
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric(f"{ticker} Return", f"{stock_return:+.1f}%")
+        col2.metric(f"{sector_etf} Return", f"{sector_return:+.1f}%")
+        col3.metric("Relative Strength", f"{relative_strength:+.1f}%",
+                    delta="Outperforming" if relative_strength > 5 else ("Underperforming" if relative_strength < -5 else None))
+
+        # Comparison chart - normalize to 100
+        stock_norm = (stock_hist['Close'] / stock_hist['Close'].iloc[0]) * 100
+        sector_norm = (sector_hist['Close'] / sector_hist['Close'].iloc[0]) * 100
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=stock_hist.index, y=stock_norm,
+            name=ticker, line=dict(color='#6366f1', width=2)
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=sector_hist.index, y=sector_norm,
+            name=sector_etf, line=dict(color='#f59e0b', width=2)
+        ))
+
+        fig.update_layout(
+            template="plotly_dark",
+            height=300,
+            yaxis_title="Normalized Performance (Base=100)",
+            showlegend=True
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error loading sector data: {e}")
+
+
+def create_empty_chart(message: str):
+    """Create empty chart with message"""
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        xref="paper", yref="paper",
+        x=0.5, y=0.5, showarrow=False,
+        font=dict(size=14, color="#888888")
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor='rgba(26, 26, 40, 0.8)',
+        height=350,
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False)
+    )
+    return fig
+
+
+# ============================================================================
+# PORTFOLIO ANALYTICS PAGE
+# ============================================================================
+
+def show_portfolio_analytics():
+    """Display portfolio-level analytics"""
+    st.title("📊 Portfolio Analytics")
+
+    portfolio = st.session_state.portfolio
+    positions_df = portfolio.get_positions_df()
+
+    if positions_df.empty:
+        st.info("No positions to analyze")
+        return
+
+    # Get analytics
+    with st.spinner("Calculating analytics..."):
+        analytics = portfolio.analyze_portfolio()
+
+    # Top metrics
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric("Portfolio Beta", f"{analytics.portfolio_beta:.2f}")
+    col2.metric("Volatility", f"{analytics.portfolio_volatility*100:.1f}%")
+    col3.metric("VaR (95%)", f"${analytics.portfolio_var_95:,.0f}")
+    col4.metric("Avg Correlation", f"{analytics.avg_correlation:.2f}")
+
+    st.markdown("---")
+
+    # 2x2 grid of charts
     col1, col2 = st.columns(2)
-    
+
     with col1:
-        st.number_input("Unusual Volume Threshold", value=2.0,
-                       help="Alert when Volume/OI exceeds this ratio")
-        st.number_input("IV Percentile Alert", value=80,
-                       help="Alert when IV above this percentile")
-    
+        st.markdown("### Rolling Beta by Position")
+        fig = create_multi_beta_chart(portfolio)
+        st.plotly_chart(fig, use_container_width=True)
+
     with col2:
-        st.number_input("Put/Call Ratio Alert", value=1.5,
-                       help="Alert when P/C ratio exceeds this")
-        st.number_input("Dashboard Refresh (seconds)", value=60)
-    
-    st.subheader("Watchlist")
-    
+        st.markdown("### Correlation Matrix")
+        fig = create_correlation_matrix(portfolio)
+        st.plotly_chart(fig, use_container_width=True)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Portfolio Greeks")
+        fig = create_greeks_chart(analytics)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.markdown("### Risk Metrics")
+        show_risk_metrics(analytics)
+
+    # Alerts section
+    if analytics.alerts:
+        st.markdown("---")
+        st.markdown("### ⚠️ Alerts")
+        for alert in analytics.alerts:
+            st.warning(alert)
+
+
+def create_multi_beta_chart(portfolio: CentralPortfolio):
+    """Create chart with beta for each position"""
+    try:
+        tickers = portfolio.get_unique_tickers()
+        corr_analyzer = st.session_state.corr_analyzer
+
+        fig = go.Figure()
+
+        for ticker in tickers:
+            try:
+                beta_result = corr_analyzer.rolling_beta(ticker, 'SPY', period='1y', window=60)
+                fig.add_trace(go.Scatter(
+                    x=beta_result.rolling_beta.index,
+                    y=beta_result.rolling_beta,
+                    name=ticker,
+                    mode='lines'
+                ))
+            except:
+                pass
+
+        fig.add_hline(y=1.0, line_dash="dot", line_color="gray", opacity=0.5)
+
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor='rgba(26, 26, 40, 0.8)',
+            height=400,
+            yaxis_title="Beta vs SPY",
+            xaxis_title="Date",
+            showlegend=True
+        )
+
+        return fig
+
+    except Exception as e:
+        return create_empty_chart(f"Error: {e}")
+
+
+def create_correlation_matrix(portfolio: CentralPortfolio):
+    """Create correlation heatmap"""
+    try:
+        tickers = portfolio.get_unique_tickers()
+
+        if len(tickers) < 2:
+            return create_empty_chart("Need at least 2 positions")
+
+        corr_analyzer = st.session_state.corr_analyzer
+        prices = corr_analyzer.fetch_price_data(tickers, period='1y')
+        returns = corr_analyzer.calculate_returns(prices)
+        corr_matrix = returns.corr()
+
+        fig = go.Figure(data=go.Heatmap(
+            z=corr_matrix.values,
+            x=corr_matrix.columns,
+            y=corr_matrix.index,
+            colorscale='RdYlGn',
+            zmid=0,
+            text=corr_matrix.values,
+            texttemplate='%{text:.2f}',
+            textfont={"size": 10},
+            colorbar=dict(title="Correlation")
+        ))
+
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor='rgba(26, 26, 40, 0.8)',
+            height=400,
+            xaxis_title="",
+            yaxis_title=""
+        )
+
+        return fig
+
+    except Exception as e:
+        return create_empty_chart(f"Error: {e}")
+
+
+def create_greeks_chart(analytics):
+    """Create bar chart of portfolio Greeks"""
+    greeks_data = {
+        'Delta': analytics.total_delta,
+        'Gamma': analytics.total_gamma,
+        'Theta': analytics.total_theta,
+        'Vega': analytics.total_vega
+    }
+
+    fig = go.Figure(data=[go.Bar(
+        x=list(greeks_data.keys()),
+        y=list(greeks_data.values()),
+        marker_color=['#6366f1', '#10b981', '#ef4444', '#f59e0b']
+    )])
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor='rgba(26, 26, 40, 0.8)',
+        height=400,
+        yaxis_title="Value",
+        showlegend=False
+    )
+
+    return fig
+
+
+def show_risk_metrics(analytics):
+    """Display risk metrics"""
+    st.metric("Value at Risk (95%)", f"${analytics.portfolio_var_95:,.0f}")
+    st.metric("Annualized Volatility", f"{analytics.portfolio_volatility*100:.1f}%")
+    st.metric("Diversification Ratio", f"{analytics.diversification_ratio:.2f}")
+
+    st.markdown("---")
+
+    st.metric("Expected Move (1D)", f"${analytics.expected_move_1d:,.0f}")
+    st.metric("Expected Move (1W)", f"${analytics.expected_move_1w:,.0f}")
+    st.metric("Prob of Profit", f"{analytics.prob_profit*100:.1f}%")
+
+
+# ============================================================================
+# WATCHLIST SCANNER PAGE
+# ============================================================================
+
+def show_watchlist_scanner():
+    """Display watchlist scanner"""
+    st.title("🔍 Watchlist Scanner")
+
     watchlist = st.session_state.watchlist
-    
-    # Edit watchlist
-    new_watchlist = st.text_area("Edit Watchlist (one ticker per line)",
-                                  value="\n".join(watchlist.tickers))
-    
-    if st.button("Save Watchlist"):
-        watchlist.tickers = [t.strip().upper() for t in new_watchlist.split("\n") if t.strip()]
-        watchlist.save()
-        st.success("Watchlist saved!")
-    
-    st.subheader("Data")
-    
-    if st.button("Clear Portfolio"):
-        st.session_state.portfolio.clear()
-        st.success("Portfolio cleared!")
-    
-    if st.button("Reset Watchlist to Default"):
-        st.session_state.watchlist.tickers = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'TSLA', 'NVDA']
-        st.session_state.watchlist.save()
-        st.success("Watchlist reset!")
+    scanner = st.session_state.scanner
+
+    # Watchlist management
+    col1, col2 = st.columns([3, 1])
+
+    with col1:
+        st.markdown("**Current Watchlist:**")
+        if watchlist.tickers:
+            st.write(", ".join(watchlist.tickers))
+        else:
+            st.write("Empty - add tickers below")
+
+    with col2:
+        if st.button("🔍 Scan Now", type="primary"):
+            if not watchlist.tickers:
+                st.error("Add tickers to watchlist first")
+            else:
+                with st.spinner("Scanning..."):
+                    results = scanner.scan_watchlist(watchlist)
+                    st.session_state.scan_results = results
+                    st.success(f"Scanned {len(results)} tickers")
+
+    # Manage watchlist
+    with st.expander("⚙️ Manage Watchlist"):
+        new_ticker = st.text_input("Add ticker").upper()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Add to Watchlist") and new_ticker:
+                watchlist.add(new_ticker)
+                st.success(f"Added {new_ticker}")
+                st.rerun()
+        with col2:
+            if st.button("Clear Watchlist"):
+                watchlist.clear()
+                st.success("Cleared")
+                st.rerun()
+
+    # Show results if available
+    if 'scan_results' in st.session_state and st.session_state.scan_results:
+        results = st.session_state.scan_results
+
+        st.markdown("---")
+        st.markdown("### Scan Results")
+
+        # Summary metrics
+        col1, col2, col3 = st.columns(3)
+        with_alerts = [r for r in results if r.has_alerts]
+
+        col1.metric("Scanned", len(results))
+        col2.metric("Alerts", len(with_alerts))
+
+        if results:
+            avg_iv = np.mean([r.atm_iv for r in results if r.atm_iv])
+            col3.metric("Avg IV", f"{avg_iv*100:.1f}%")
+
+        # Display alerts
+        if with_alerts:
+            st.markdown("### ⚠️ Opportunities")
+            for result in with_alerts:
+                with st.expander(f"{result.ticker} - {len(result.alerts)} alerts"):
+                    for alert in result.alerts:
+                        st.warning(alert)
+
+                    # Quick add button
+                    if st.button(f"View {result.ticker} Details", key=f"view_{result.ticker}"):
+                        st.info(f"Add {result.ticker} to portfolio first to view details")
 
 
-# Footer
-st.sidebar.markdown("---")
-st.sidebar.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
-st.sidebar.caption("Options Analytics Dashboard v1.0")
+# ============================================================================
+# MAIN NAVIGATION
+# ============================================================================
+
+def main():
+    """Main application entry point"""
+    # Initialize session state
+    initialize_session_state()
+
+    portfolio = st.session_state.portfolio
+
+    # Sidebar navigation
+    with st.sidebar:
+        st.markdown("# 📊 Terminal")
+
+        mode = st.radio("Mode", ["Portfolio", "Watchlist"])
+        st.session_state.view_mode = mode.lower()
+
+        st.markdown("---")
+
+        if mode == "Portfolio":
+            if st.session_state.selected_ticker:
+                # In drill-down mode
+                st.markdown(f"### Viewing: {st.session_state.selected_ticker}")
+                if st.button("← Back to Overview"):
+                    st.session_state.selected_ticker = None
+                    st.rerun()
+            else:
+                # Normal portfolio navigation
+                page = st.radio("Page", ["Overview", "Analytics", "Manage Positions"])
+                st.session_state.current_page = page.lower().replace(' ', '_')
+        else:
+            # Watchlist mode
+            st.session_state.current_page = 'watchlist'
+
+        # Global controls
+        st.markdown("---")
+        st.markdown("### Controls")
+        lookback = st.selectbox(
+            "Lookback Period",
+            [30, 60, 90, 120, 180, 252],
+            index=1
+        )
+        st.session_state.lookback_days = lookback
+
+    # Route to appropriate page
+    if st.session_state.selected_ticker:
+        show_stock_detail(st.session_state.selected_ticker)
+    elif st.session_state.current_page == 'overview':
+        show_portfolio_overview()
+    elif st.session_state.current_page == 'analytics':
+        show_portfolio_analytics()
+    elif st.session_state.current_page == 'manage_positions':
+        show_manage_positions()
+    elif st.session_state.current_page == 'watchlist':
+        show_watchlist_scanner()
+
+
+if __name__ == "__main__":
+    main()
