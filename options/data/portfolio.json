@@ -1,0 +1,45 @@
+{
+  "positions": [
+    {
+      "ticker": "INTC",
+      "position_type": "stock",
+      "quantity": 125,
+      "entry_price": 42.772,
+      "entry_date": "2026-01-20",
+      "strike": null,
+      "expiration": null,
+      "notes": ""
+    },
+    {
+      "ticker": "AAPL",
+      "position_type": "stock",
+      "quantity": 100,
+      "entry_price": 100.0,
+      "entry_date": "2026-01-20",
+      "strike": null,
+      "expiration": null,
+      "notes": ""
+    },
+    {
+      "ticker": "NVDA",
+      "position_type": "stock",
+      "quantity": 100,
+      "entry_price": 100.0,
+      "entry_date": "2026-01-20",
+      "strike": null,
+      "expiration": null,
+      "notes": ""
+    },
+    {
+      "ticker": "ONDS",
+      "position_type": "stock",
+      "quantity": 100,
+      "entry_price": 100.0,
+      "entry_date": "2026-01-20",
+      "strike": null,
+      "expiration": null,
+      "notes": ""
+    }
+  ],
+  "last_updated": "2026-01-20T21:45:42.933451"
+}
