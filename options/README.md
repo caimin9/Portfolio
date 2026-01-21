@@ -54,14 +54,23 @@ A comprehensive options analysis toolkit with portfolio monitoring, market scann
 
 ## Installation
 
+**From project root:**
 ```bash
-pip install yfinance numpy pandas scipy matplotlib plotly streamlit requests seaborn
+# Create and activate virtual environment
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+source .venv/bin/activate  # macOS/Linux
+
+# Install all dependencies
+pip install -r requirements.txt
 ```
 
-Optional (for scheduled scanning):
-```bash
-pip install apscheduler
-```
+This installs all 68 required packages including:
+- yfinance, pandas, numpy, scipy (data analysis)
+- matplotlib, plotly, seaborn (visualization)
+- streamlit (dashboards)
+- fastapi, uvicorn (API server)
+- And all their dependencies
 
 ## Usage
 
