@@ -216,17 +216,11 @@ Detect unusual activity:
 **Dashboards:**
 - Streamlit (interactive web apps)
 
-## Contributing
-
-This is a personal portfolio project. Feel free to fork and customize for your own use.
 
 ## Repository
 
 GitHub: https://github.com/caimin9/Portfolio
 
-## License
-
-Personal use only. Not for commercial distribution.
 
 ---
 
